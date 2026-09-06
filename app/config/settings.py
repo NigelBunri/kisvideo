@@ -11,10 +11,25 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://kis_video:kis_video@localhost:5432/kis_video"
     redis_url: str = "redis://localhost:6379/0"
 
-    s3_bucket: str = ""
-    s3_region: str = "eu-west-2"
+    # Field names match backend/kis's actual S3 env vars exactly (see
+    # apps/media/storage_backends.py) — pydantic-settings maps a field to
+    # its uppercased name by default, so aws_storage_bucket_name reads
+    # AWS_STORAGE_BUCKET_NAME with no alias needed. The original s3_bucket/
+    # s3_region names here would have read S3_BUCKET/S3_REGION instead —
+    # different env vars than what's actually deployed for Django/Nest
+    # today, which is exactly the "invented a new convention instead of
+    # reusing the existing one" ARCHITECTURE.md/dev-3c's task both warned
+    # against.
+    aws_storage_bucket_name: str = ""
+    aws_s3_region_name: str = "eu-west-2"
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""
+    # Optional — only set for an S3-compatible non-AWS endpoint, or to
+    # front the bucket with a CDN domain. Both default to AWS's own S3
+    # endpoint / the bucket's own S3 domain when unset, same fallback
+    # behavior as S3MediaStorage on the Django side.
+    aws_s3_endpoint_url: str = ""
+    aws_s3_custom_domain: str = ""
 
     # Where completed uploads are staged before a transcode job picks them
     # up. A local path in dev; should be a durable volume in production
