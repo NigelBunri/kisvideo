@@ -30,6 +30,7 @@ import shutil
 import tempfile
 import urllib.error
 import urllib.request
+import uuid
 import json as json_module
 from datetime import datetime, timezone
 
@@ -159,6 +160,16 @@ def transcode_video(self, job_id: str) -> None:
             thumbnail_url = upload_file(thumbnail_path, f"{key_prefix}/thumbnail.jpg")
 
         # ── 6. Finalize: create Asset, mark ready, notify ────────────────
+        # renditions_payload (the per-height {height, bitrate_kbps,
+        # playlist_url} list) still gets stored on Asset.renditions itself
+        # for admin/debug visibility (its own model doc comment), but is
+        # deliberately NOT part of the webhook payload below — coordinated
+        # directly with dev-83 (jobs/playback API): the webhook's "asset"
+        # object is meant to be the exact same AssetSummary shape their
+        # GET /jobs/{id} already returns inline, so anyone consuming either
+        # the push (webhook) or poll (GET) path gets one consistent
+        # contract. Anyone who genuinely needs the full rendition ladder
+        # can still call GET /assets/{id} directly.
         renditions_payload = [
             {
                 "height": r.height,
@@ -167,11 +178,17 @@ def transcode_video(self, job_id: str) -> None:
             }
             for r in renditions
         ]
+        # Generated explicitly (not left to Asset.id's own Python-side
+        # `default=`) so it's a known value here, usable in the webhook
+        # payload below without depending on SQLAlchemy's flush timing to
+        # have populated it back onto the ORM object first.
+        asset_id = str(uuid.uuid4())
         with session_scope() as db:
             job = db.get(TranscodeJob, job_id)
             job.status = "ready"
             job.completed_at = datetime.now(timezone.utc)
             asset = Asset(
+                id=asset_id,
                 transcode_job_id=job_id,
                 master_playlist_url=master_playlist_url,
                 thumbnail_url=thumbnail_url,
@@ -185,10 +202,12 @@ def transcode_video(self, job_id: str) -> None:
                 "job_id": job_id,
                 "caller_reference": caller_reference,
                 "status": "ready",
-                "master_playlist_url": master_playlist_url,
-                "thumbnail_url": thumbnail_url,
-                "duration_seconds": result.duration_seconds,
-                "renditions": renditions_payload,
+                "asset": {
+                    "id": asset_id,
+                    "master_playlist_url": master_playlist_url,
+                    "thumbnail_url": thumbnail_url,
+                    "duration_seconds": result.duration_seconds,
+                },
             })
 
     except (FfmpegError, S3UploadError, FileNotFoundError) as exc:
