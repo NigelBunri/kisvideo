@@ -1,4 +1,5 @@
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
+from contextlib import contextmanager
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -18,5 +19,26 @@ def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
         yield db
+    finally:
+        db.close()
+
+
+@contextmanager
+def session_scope() -> Iterator[Session]:
+    """Celery-task-facing equivalent of get_db above. Tasks run outside
+    FastAPI's request lifecycle, so there's no dependency-injection
+    mechanism to yield a session through — this is a plain context manager
+    instead: `with session_scope() as db: ...`. Commits on clean exit,
+    rolls back on any exception, always closes — every worker task in
+    app/workers/ should wrap its DB work in this rather than opening a bare
+    SessionLocal() directly, so a mid-task exception can never leave a
+    half-written transaction open against the connection pool."""
+    db = SessionLocal()
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
