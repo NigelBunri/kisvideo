@@ -161,7 +161,16 @@ async def patch_upload(
             detail="Content-Type must be application/offset+octet-stream.",
         )
 
-    session = db.get(UploadSession, upload_id)
+    # with_for_update: without a row lock, two concurrent PATCH requests
+    # for the same upload_id (e.g. a client retry-storm from a flaky
+    # connection firing twice before either response lands) could both
+    # read the same offset_bytes, both pass the offset check below, and
+    # both write to the same file region - a real data race, not just a
+    # theoretical one, since tus clients don't guarantee serialized PATCH
+    # calls on their own. This blocks the second request until the first
+    # transaction commits, so it sees the updated offset and correctly
+    # gets a 409 instead of silently corrupting the file.
+    session = db.get(UploadSession, upload_id, with_for_update=True)
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload not found.")
     if session.status != "uploading":
