@@ -9,10 +9,31 @@ services:
       - redis
     volumes:
       - .:/app
+      - kis_video_uploads:/tmp/kis-video-uploads
 
   worker:
     build: .
     command: celery -A app.workers.celery_app worker --loglevel=info
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - .:/app
+      - kis_video_uploads:/tmp/kis-video-uploads
+
+  # Beat only *schedules* periodic tasks (currently just the hourly
+  # abandoned-upload sweep, see celery_app.py's beat_schedule) - it never
+  # executes one itself (that's `worker`, which actually consumes the task
+  # message beat enqueues). Without this service running, `worker` sits
+  # idle forever waiting for a periodic task that nothing ever fires - a
+  # real, easy-to-miss gap if you only ever ran `api` + `worker` while
+  # developing the upload/transcode endpoints, before any periodic task
+  # existed to need it. Doesn't need the uploads volume - it never touches
+  # a file, only sends task messages.
+  beat:
+    build: .
+    command: celery -A app.workers.celery_app beat --loglevel=info
     env_file: .env
     depends_on:
       - postgres
@@ -38,3 +59,13 @@ services:
 
 volumes:
   kis_video_pg:
+  # Real bug this fixes, not just hardening: settings.upload_staging_dir
+  # defaults to /tmp/kis-video-uploads, a path that lives INSIDE each
+  # container's own filesystem - api and worker are separate containers,
+  # so without a shared volume mounted at that same path in both, a file
+  # api's tus PATCH handler stages is completely invisible to worker's
+  # transcode task. The end-to-end upload -> transcode handoff would
+  # silently fail the moment this ever actually ran via `docker compose up`
+  # rather than pytest (which runs directly on the host, no container
+  # boundary, so this never showed up there).
+  kis_video_uploads:
