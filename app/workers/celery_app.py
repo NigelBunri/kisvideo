@@ -21,3 +21,17 @@ celery_app = Celery(
 # forever" with no error anywhere obvious, exactly the kind of silent
 # failure this whole service is trying to avoid.
 import app.workers.transcode  # noqa: E402,F401
+import app.workers.cleanup  # noqa: E402,F401
+
+# Runs on a Celery Beat process (a separate `celery -A app.workers.celery_app
+# beat` command/container - beat only schedules, it doesn't execute; a
+# regular worker process still has to be running to actually pick the task
+# up). Hourly is frequent enough that upload_ttl_hours' cutoff is enforced
+# within about an hour of actually crossing it, not frequent enough to be
+# meaningfully expensive (a single indexed query over 'uploading' rows).
+celery_app.conf.beat_schedule = {
+    "cleanup-abandoned-uploads-hourly": {
+        "task": "cleanup_abandoned_uploads",
+        "schedule": 3600.0,
+    },
+}
