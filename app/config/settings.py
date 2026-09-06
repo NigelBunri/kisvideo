@@ -37,5 +37,14 @@ class Settings(BaseSettings):
     # builds the tus endpoint to make explicitly, not silently assume).
     upload_staging_dir: str = "/tmp/kis-video-uploads"
 
+    # A tus session still in 'uploading' status older than this is
+    # considered abandoned (dropped connection, client crash, a user who
+    # just never came back) - see app/workers/cleanup.py's periodic sweep.
+    # 24h is generous enough that a genuinely slow/interrupted-but-still-
+    # resuming upload on a bad connection won't get swept out from under
+    # a client that's still trying, while not leaving abandoned files on
+    # disk indefinitely.
+    upload_ttl_hours: int = 24
+
 
 settings = Settings()

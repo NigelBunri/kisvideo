@@ -1,0 +1,114 @@
+# Production deployment config - NOT for local dev, use docker-compose.yml
+# for that. Differences from the dev file, and why each one exists:
+#
+# - No bind-mounted source (`.:/app`) - the built image's own COPY'd code
+#   runs as-is. A live bind mount is a dev-only convenience (edit-and-see
+#   immediately); in production it would mean the container's code can
+#   silently drift from what was actually built/tested if the host
+#   filesystem ever differs from the image.
+# - `restart: unless-stopped` on every long-running service - a crashed
+#   worker/beat/api should come back on its own, and all three should
+#   survive a host reboot, without needing someone to notice and run
+#   `docker compose up` by hand.
+# - Named volume for Postgres AND for the upload staging directory (see
+#   docker-compose.yml's own comment on why the staging volume has to be
+#   shared between api and worker specifically, not just present).
+# - No host port mappings for postgres/redis - nothing outside the compose
+#   network needs to reach them directly; only `api` is exposed.
+# - Healthchecks + `depends_on: condition: service_healthy` - a worker or
+#   api starting the instant the postgres/redis *container* exists, before
+#   either is actually ready to accept connections, is a real, common
+#   startup-race bug, not a hypothetical one.
+#
+# Not yet decided (deliberately left as-is, not silently assumed): which
+# host this runs on (new infra vs. existing Lightsail), so image sources
+# below stay as local `build: .` rather than a specific GHCR/registry
+# reference - once that's settled and a CI/CD pipeline exists, swap `build:
+# .` for `image: <registry>/kis-video:production` on each service, the
+# same pattern already used for kis-django/kis-nest (see the KIS ops
+# runbook). Resource limits are also intentionally left commented rather
+# than guessed - real values depend on the eventual host's actual specs.
+
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8010:8000"
+    env_file: .env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - kis_video_uploads:/tmp/kis-video-uploads
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 512M
+
+  worker:
+    build: .
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
+    restart: unless-stopped
+    env_file: .env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - kis_video_uploads:/tmp/kis-video-uploads
+    # ffmpeg transcoding is CPU/memory-heavy - --concurrency=2 is a starting
+    # point, not a measured value; tune once this runs against real video
+    # on real hardware (see ARCHITECTURE.md's "never run end-to-end
+    # against real ffmpeg yet" open item).
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 2G
+
+  beat:
+    build: .
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    restart: unless-stopped
+    env_file: .env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # No uploads volume - beat only schedules, never touches a file.
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      POSTGRES_USER: kis_video
+      POSTGRES_DB: kis_video
+      # POSTGRES_PASSWORD comes from .env.production, not hardcoded here -
+      # dev's docker-compose.yml hardcodes kis_video/kis_video, which is
+      # fine for a throwaway local DB and not acceptable once this is a
+      # real, reachable service.
+    volumes:
+      - kis_video_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kis_video -d kis_video"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  kis_video_pg:
+  kis_video_uploads:

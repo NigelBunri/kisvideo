@@ -1,6 +1,13 @@
 __pycache__/
 *.pyc
-.env
+# .env matched literally, not .env* - real secrets files beyond plain
+# .env (.env.production, .env.staging, etc.) were NOT covered by this
+# until now, a genuine gap: the tracked templates (.env.example,
+# .env.production.example) are re-included explicitly below so this
+# still doesn't block committing those.
+.env*
+!.env.example
+!.env.production.example
 .venv/
 venv/
 .pytest_cache/
