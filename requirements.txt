@@ -8,3 +8,11 @@ alembic>=1.14,<2
 boto3>=1.34,<2
 pydantic-settings>=2.6,<3
 python-multipart>=0.0.12
+
+# Test-only (not needed to run the service itself) - pytest wasn't listed
+# here either, same gap as httpx: a clean clone + pip install couldn't run
+# this repo's own test suite until both were added. FastAPI's TestClient
+# requires httpx specifically (it's built on Starlette's TestClient, which
+# wraps httpx).
+pytest>=8.3,<10
+httpx>=0.27,<1
