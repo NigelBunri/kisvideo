@@ -140,7 +140,29 @@ def transcode_rendition(source_path: str, output_dir: str, rendition: Rendition)
         "-vf",
         f"scale=-2:{rendition.height}",
         "-c:v",
-        "h264",
+        # libx264 is the real encoder name — "h264" is not a valid ffmpeg
+        # encoder identifier (it's the codec *name*, which ffmpeg exposes
+        # for decoding/probing, but -c:v needs one of the concrete encoder
+        # implementations: libx264 in software, or a hardware-specific
+        # variant like h264_nvenc/h264_qsv/h264_vaapi — none of which exist
+        # on a plain GPU-less VM such as the Lightsail box this runs on.
+        # Verified directly against that server's real ffmpeg build, not
+        # assumed — every job would otherwise fail immediately with
+        # "Unknown encoder 'h264'" (loudly, not silently: caught below as a
+        # CalledProcessError -> FfmpegError -> job marked 'failed' with a
+        # real message, so this was never a data-corruption risk — just a
+        # 100% job-failure rate until fixed).
+        "libx264",
+        # Explicit rather than relying on libx264's own default (medium) -
+        # bitrate is already fixed by -b:v/-maxrate/-bufsize below (correct
+        # for an HLS bitrate ladder, where each rung needs a predictable
+        # bitrate for the player's ABR switching logic - -crf would produce
+        # variable, unpredictable output size and defeat that), so a slower
+        # preset here only spends more CPU/wall-clock time for a marginal
+        # quality gain AT that same fixed bitrate - not worth it for a
+        # background queue job on a plain, GPU-less VM.
+        "-preset",
+        "veryfast",
         "-b:v",
         f"{rendition.bitrate_kbps}k",
         "-maxrate",

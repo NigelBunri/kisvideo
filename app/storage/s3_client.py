@@ -30,6 +30,19 @@ from botocore.config import Config
 
 from app.config.settings import settings
 
+# Python's stdlib mimetypes has no entry for .m4s (fMP4/CMAF segments) at
+# all — guess_type() returns (None, None) for it, silently falling through
+# to the generic application/octet-stream fallback below. Confirmed via
+# direct testing, not assumed. video/iso.segment is the type actually used
+# for these across HLS tooling (Akamai's own HLS packaging docs, hls.js);
+# most players tolerate a wrong/missing type for segments in practice, but
+# there's no reason to rely on that tolerance when the real type is known
+# and cheap to set explicitly. Checked before falling through to
+# mimetypes.guess_type() for anything not in this dict.
+_EXTENSION_CONTENT_TYPE_OVERRIDES = {
+    ".m4s": "video/iso.segment",
+}
+
 
 class S3UploadError(Exception):
     """Raised for any upload failure — callers (the Celery tasks) catch
@@ -73,7 +86,12 @@ def upload_file(local_path: str, key: str) -> str:
     with a sane type, unlike a generic downloadable attachment where a
     fallback octet-stream is harmless) — returns the object's public URL.
     """
-    content_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
+    ext = os.path.splitext(key)[1].lower()
+    content_type = (
+        _EXTENSION_CONTENT_TYPE_OVERRIDES.get(ext)
+        or mimetypes.guess_type(key)[0]
+        or "application/octet-stream"
+    )
     try:
         _client().upload_file(
             local_path,
