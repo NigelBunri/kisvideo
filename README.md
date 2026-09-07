@@ -44,7 +44,52 @@ process the container runs, the same pattern most Django+Celery or
 FastAPI+Celery services use rather than maintaining two near-identical
 images.
 
+**Resource sizing**: `docker-compose.prod.yml`'s `worker` memory limit
+(512M) is grounded in a real measurement, not a guess. dev-b0 wrapped the
+actual ffmpeg binary in `/usr/bin/time -l` (macOS's peak-RSS reporter)
+against the real pipeline's fixed libx264/veryfast settings, on a 3s
+1280x720 test clip:
+
+| stage | peak RSS |
+|---|---|
+| 720p rendition | 375.7 MB |
+| 480p rendition | 239.6 MB |
+| 360p rendition | 185.9 MB |
+| thumbnail (`-frames:v 1`) | 82.8 MB |
+| worker Python process (parent) | ~9 MB, stable |
+
+Renditions run sequentially inside one task (never concurrently), so peak
+worker memory is baseline + the single highest-resolution rendition in
+flight - about 386 MB for a source capped at 720p. 512M leaves roughly
+30% headroom over that.
+
+Caveats that keep this an estimate, not a guarantee, on the actual
+Lightsail target:
+- Measured on Apple Silicon macOS ffmpeg 9.0.1 (NEON/DotProd/I8MM), not
+  the target's CPU/OS/ffmpeg build. x264 memory is driven far more by
+  resolution/encoder settings than CPU architecture, so this should
+  transfer reasonably well, but hasn't been confirmed on that hardware.
+- Only tested a 3-second source. x264's memory footprint is frame-buffer-
+  bound, not duration-bound, so a multi-minute upload shouldn't change
+  this materially - but that assumption itself hasn't been verified
+  against a real multi-minute file.
+- Assumes source video tops out at 720p. If uploads can be 1080p+, the
+  decode + encode footprint will scale up with the source's own pixel
+  count (roughly proportional, unmeasured) - revisit the limit before
+  allowing higher-resolution sources.
+
+**Known issue (non-fatal)**: the thumbnail ffmpeg command
+(`-frames:v 1 -vf scale=320:-1 <file>.jpg`, no `-update`) prints a benign
+"does not contain an image sequence pattern" warning on newer ffmpeg
+versions. Confirmed non-fatal today - the thumbnail is still written
+correctly - but add `-update 1` to silence it and avoid it becoming a
+hard error on a future ffmpeg version.
+
 **Not yet done** (tracked, not silently skipped): this service has never
-run end-to-end against real ffmpeg + a real S3 bucket, only unit-tested
-per-component and reviewed. That's the next real milestone before this
-is genuinely production-ready, not just "the code exists and compiles."
+run end-to-end against a real S3 bucket, only unit-tested per-component,
+reviewed, and (as of the smoke test in `docs/DEPLOYMENT.md`'s history)
+verified for the upload -> staging -> queue handoff across the real
+container boundary. Real ffmpeg transcode correctness and memory have
+now been measured directly (see above); full real-S3 upload/serve of the
+transcoded output is the next real milestone before this is genuinely
+production-ready end to end.

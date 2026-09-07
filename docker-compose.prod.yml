@@ -1,33 +1,43 @@
-# Production deployment config - NOT for local dev, use docker-compose.yml
-# for that. Differences from the dev file, and why each one exists:
+# Production deployment config for the shared Lightsail box - NOT for
+# local dev, use docker-compose.yml for that.
 #
-# - No bind-mounted source (`.:/app`) - the built image's own COPY'd code
-#   runs as-is. A live bind mount is a dev-only convenience (edit-and-see
-#   immediately); in production it would mean the container's code can
-#   silently drift from what was actually built/tested if the host
-#   filesystem ever differs from the image.
-# - `restart: unless-stopped` on every long-running service - a crashed
-#   worker/beat/api should come back on its own, and all three should
-#   survive a host reboot, without needing someone to notice and run
-#   `docker compose up` by hand.
-# - Named volume for Postgres AND for the upload staging directory (see
-#   docker-compose.yml's own comment on why the staging volume has to be
-#   shared between api and worker specifically, not just present).
-# - No host port mappings for postgres/redis - nothing outside the compose
-#   network needs to reach them directly; only `api` is exposed.
-# - Healthchecks + `depends_on: condition: service_healthy` - a worker or
-#   api starting the instant the postgres/redis *container* exists, before
-#   either is actually ready to accept connections, is a real, common
-#   startup-race bug, not a hypothetical one.
+# Lean by necessity, not preference: this runs on the SAME server as
+# Django/Nest/chat, which is tight on resources (2 CPU cores, 3.7GB RAM,
+# ~725MB free at last check, already 1.4GB in swap). Confirmed directly
+# against the real server (read-only `docker network ls`/`docker inspect`,
+# 2026-09-07):
 #
-# Not yet decided (deliberately left as-is, not silently assumed): which
-# host this runs on (new infra vs. existing Lightsail), so image sources
-# below stay as local `build: .` rather than a specific GHCR/registry
-# reference - once that's settled and a CI/CD pipeline exists, swap `build:
-# .` for `image: <registry>/kis-video:production` on each service, the
-# same pattern already used for kis-django/kis-nest (see the KIS ops
-# runbook). Resource limits are also intentionally left commented rather
-# than guessed - real values depend on the eventual host's actual specs.
+# - No separate postgres/redis containers for this service. Reuses the
+#   EXISTING kis-postgres (a new `kis_video` database inside that same
+#   Postgres instance/server - a manual `CREATE DATABASE kis_video`
+#   step at deploy time, not something this compose file does) and the
+#   EXISTING kis-redis, on Redis DB index 1 rather than the default 0
+#   (index 0 already has live Django/Nest task traffic on it - a lesson
+#   learned the hard way earlier the same day this was written, when a
+#   test worker collided with a real task on the shared default DB).
+# - Both existing containers live on `kis-production-network` (an
+#   external network, created by the Django/Nest compose stack, not this
+#   one) with no host port mapping - reachable by container name
+#   (kis-postgres, kis-redis) from anything else joined to that same
+#   network, never from the host or a different network.
+# - `depends_on` can only reference services defined in THIS compose
+#   file/project - it can't express "wait for kis-postgres/kis-redis,
+#   which live in a different compose project" the way the dev file's
+#   depends_on could for its own bundled postgres/redis. Those containers
+#   are already part of the always-running core stack in practice, but
+#   there's no compose-level startup ordering guarantee against them here
+#   - worth knowing if this is ever deployed to a fresh network where that
+#   isn't already true.
+# - `worker --concurrency=1`, not the original 2 - only 2 CPU cores total
+#   on this box, shared with live Django/Nest/chat traffic; ffmpeg
+#   transcoding is the most CPU-hungry thing this service does (see
+#   README.md's resource-sizing note for the reasoning behind this and
+#   the memory limit below).
+#
+# Restart policies, healthcheck posture for THIS service's own containers,
+# no bind-mounted source, and the shared upload-staging volume are
+# unchanged from the original design - see git history for that reasoning
+# if the original (non-shared-infra) version is ever needed again.
 
 services:
   api:
@@ -36,79 +46,52 @@ services:
     ports:
       - "8010:8000"
     env_file: .env.production
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    networks:
+      - kis-production-network
     volumes:
       - kis_video_uploads:/tmp/kis-video-uploads
-    # deploy:
-    #   resources:
-    #     limits:
-    #       memory: 512M
 
   worker:
     build: .
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=1
     restart: unless-stopped
     env_file: .env.production
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    networks:
+      - kis-production-network
     volumes:
       - kis_video_uploads:/tmp/kis-video-uploads
-    # ffmpeg transcoding is CPU/memory-heavy - --concurrency=2 is a starting
-    # point, not a measured value; tune once this runs against real video
-    # on real hardware (see ARCHITECTURE.md's "never run end-to-end
-    # against real ffmpeg yet" open item).
-    # deploy:
-    #   resources:
-    #     limits:
-    #       memory: 2G
+    # See README.md's "Resource sizing" section for the full derivation -
+    # this is a measured value now, not a guess: dev-b0 wrapped real
+    # ffmpeg invocations in `/usr/bin/time -l` against the actual
+    # libx264/veryfast pipeline settings. Peak observed was ~376MB for a
+    # single 720p rendition (renditions run sequentially, never
+    # concurrently, so that's also the worker's peak); 512M leaves ~30%
+    # headroom over that. Assumes source video tops out at 720p - revisit
+    # before allowing higher-resolution uploads.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   beat:
     build: .
     command: celery -A app.workers.celery_app beat --loglevel=info
     restart: unless-stopped
     env_file: .env.production
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    networks:
+      - kis-production-network
     # No uploads volume - beat only schedules, never touches a file.
 
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    env_file: .env.production
-    environment:
-      POSTGRES_USER: kis_video
-      POSTGRES_DB: kis_video
-      # POSTGRES_PASSWORD comes from .env.production, not hardcoded here -
-      # dev's docker-compose.yml hardcodes kis_video/kis_video, which is
-      # fine for a throwaway local DB and not acceptable once this is a
-      # real, reachable service.
-    volumes:
-      - kis_video_pg:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U kis_video -d kis_video"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+networks:
+  # external: true - this network already exists (created by the
+  # Django/Nest compose stack at /opt/kis). This file must never define
+  # its own `kis-production-network`, which would either fail (name
+  # collision) or, worse, silently create a SECOND, different network with
+  # the same name in a different compose project, leaving api/worker/beat
+  # unable to actually reach kis-postgres/kis-redis despite no error at
+  # deploy time.
+  kis-production-network:
+    external: true
 
 volumes:
-  kis_video_pg:
   kis_video_uploads:
