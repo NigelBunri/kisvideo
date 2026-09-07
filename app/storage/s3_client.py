@@ -13,10 +13,13 @@ much smaller surface.
 HLS playback fundamentally requires every playlist/segment URL to be
 fetchable by a plain, unauthenticated GET — no HLS player does per-segment
 presigned-URL refreshing out of the box, unlike a single downloadable
-attachment. This is therefore always uploaded public-read, independent of
-whatever AWS_S3_PUBLIC_BUCKET is set to for Django's own (different) media
-bucket — that setting is a per-bucket, per-use-case choice; nothing here
-assumes or depends on Django's bucket being public too.
+attachment. Public readability is expected to come from a bucket policy
+on this service's key prefix, NOT a per-object ACL — the real production
+bucket (2026-09-07) has S3 Object Ownership set to "Bucket owner
+enforced", which rejects any PutObject carrying an ACL at all, so
+upload_file() below deliberately does not set one. See its own docstring
+for the full story and what to verify (a real bucket-policy check) before
+trusting a "ready" asset's playback URL.
 """
 
 from __future__ import annotations
@@ -81,10 +84,24 @@ def public_url(key: str) -> str:
 
 
 def upload_file(local_path: str, key: str) -> str:
-    """Uploads one local file to `key`, public-read, with a best-guess
-    Content-Type (HLS players are picky about .m3u8/.m4s/.mp4 being served
-    with a sane type, unlike a generic downloadable attachment where a
-    fallback octet-stream is harmless) — returns the object's public URL.
+    """Uploads one local file to `key`, with a best-guess Content-Type
+    (HLS players are picky about .m3u8/.m4s/.mp4 being served with a sane
+    type, unlike a generic downloadable attachment where a fallback
+    octet-stream is harmless) — returns the object's public URL.
+
+    Does NOT set ACL="public-read" — found via a real production deploy
+    (2026-09-07) that the actual target bucket has S3 Object Ownership set
+    to "Bucket owner enforced", which rejects any PutObject carrying an
+    ACL at all (AccessControlListNotSupported), regardless of the ACL's
+    value. Same bucket Django's own S3MediaStorage writes to, and that
+    code only sets ACL when self.public_bucket is true — false in this
+    exact production config, which is exactly why Django's own uploads
+    never hit this. Public readability for HLS playback (this service's
+    whole reason for returning an unsigned public_url() rather than a
+    signed one) must come from a bucket policy on this key prefix instead
+    of a per-object ACL - verify that policy actually grants public GET on
+    this prefix before trusting a "ready" asset's playback URL; an
+    upload succeeding here no longer proves the URL is actually fetchable.
     """
     ext = os.path.splitext(key)[1].lower()
     content_type = (
@@ -97,7 +114,7 @@ def upload_file(local_path: str, key: str) -> str:
             local_path,
             settings.aws_storage_bucket_name,
             key,
-            ExtraArgs={"ContentType": content_type, "ACL": "public-read"},
+            ExtraArgs={"ContentType": content_type},
         )
     except Exception as exc:
         raise S3UploadError(f"Failed to upload {os.path.basename(local_path)} to s3://{key}: {exc}") from exc
