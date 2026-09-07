@@ -42,6 +42,7 @@
 services:
   api:
     build: .
+    container_name: kis-video-api
     restart: unless-stopped
     ports:
       - "8010:8000"
@@ -53,6 +54,7 @@ services:
 
   worker:
     build: .
+    container_name: kis-video-worker
     command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=1
     restart: unless-stopped
     env_file: .env.production
@@ -75,6 +77,7 @@ services:
 
   beat:
     build: .
+    container_name: kis-video-beat
     command: celery -A app.workers.celery_app beat --loglevel=info
     restart: unless-stopped
     env_file: .env.production
