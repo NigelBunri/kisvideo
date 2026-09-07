@@ -81,6 +81,30 @@ def test_send_webhook_includes_signature_header(monkeypatch):
     assert captured_request["body"] == expected_body
 
 
+def test_send_webhook_sets_a_non_default_user_agent(monkeypatch):
+    """Regression test for a 2026-09-07 production finding: urllib's
+    default User-Agent ("Python-urllib/3.x") gets blocked outright by
+    Cloudflare in front of the real Django host - a 403 at the edge,
+    before the request ever reaches Django's own auth/signature checks.
+    Confirmed directly against the real endpoint: the default UA gets
+    403'd, a real browser/curl-like UA reaches Django and gets a genuine
+    400 instead. Every real transcode-complete callback was silently
+    dropped until this was set."""
+    monkeypatch.setattr(settings, "internal_token", TEST_TOKEN)
+    captured_request = {}
+
+    def _fake_urlopen(req, timeout=10):
+        captured_request["headers"] = dict(req.header_items())
+        return _FakeResponse()
+
+    with patch("app.workers.transcode.urllib.request.urlopen", side_effect=_fake_urlopen):
+        _send_webhook("https://example.test/callback", {"job_id": "abc123", "status": "ready"})
+
+    headers_ci = {k.lower(): v for k, v in captured_request["headers"].items()}
+    assert "user-agent" in headers_ci
+    assert "python-urllib" not in headers_ci["user-agent"].lower()
+
+
 def test_send_webhook_omits_signature_and_warns_when_token_unconfigured(monkeypatch, caplog):
     monkeypatch.setattr(settings, "internal_token", "")
     payload = {"job_id": "abc123", "status": "ready"}

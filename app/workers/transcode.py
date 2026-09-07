@@ -126,7 +126,15 @@ def _send_webhook(url: str, payload: dict) -> None:
     and untampered, which the URL token alone does not.
     """
     body = json_module.dumps(payload).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
+    # Explicit User-Agent: found via a real production deploy (2026-09-07)
+    # that urllib's default ("Python-urllib/3.x") gets blocked outright by
+    # Cloudflare in front of api.kingdomimpactventures.org — a 403 from
+    # Cloudflare itself, before the request ever reaches Django (confirmed
+    # by testing the same URL with/without that default UA directly; the
+    # non-default-UA request reached Django and got a real 400 instead).
+    # Every real transcode-complete callback was silently dropped at the
+    # edge until this was set.
+    headers = {"Content-Type": "application/json", "User-Agent": "kisvideo-webhook/1.0"}
     signature = _sign_webhook_body(body)
     if signature:
         headers["X-KisVideo-Signature"] = f"sha256={signature}"
