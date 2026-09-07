@@ -24,6 +24,8 @@ itself, only consumes it.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import os
 import shutil
@@ -34,6 +36,7 @@ import uuid
 import json as json_module
 from datetime import datetime, timezone
 
+from app.config.settings import settings
 from app.db import session_scope
 from app.models.asset import Asset, TranscodeJob
 from app.models.upload import UploadSession
@@ -82,6 +85,30 @@ def _mark_failed(job_id: str, error_message: str) -> None:
         logger.exception("Failed to record failure for TranscodeJob %s — job may be stuck as 'transcoding'.", job_id)
 
 
+def _sign_webhook_body(body: bytes) -> str | None:
+    """HMAC-SHA256 over the exact bytes being sent, keyed by the same
+    shared secret already used for inbound auth (settings.internal_token,
+    see app/api/deps.py::require_internal_auth) — reusing that secret
+    rather than introducing a second one, since Django's
+    KIS_VIDEO_SERVICE_INTERNAL_TOKEN is already the one value both sides
+    agree on. Returns None (caller sends unsigned) if the token isn't
+    configured — matches require_internal_auth's own posture without
+    turning a missing outbound secret into a hard crash of the finalize
+    step; the job's status is already durably recorded by the time this
+    runs either way.
+
+    Signs the raw JSON bytes actually transmitted, not a re-serialization
+    of the payload dict — a second json.dumps() call could in principle
+    differ in key order/float formatting from the bytes actually on the
+    wire, which would make the receiver's signature check fail even for a
+    genuine, untampered payload. Signing the literal bytes avoids that
+    whole class of mismatch.
+    """
+    if not settings.internal_token:
+        return None
+    return hmac.new(settings.internal_token.encode("utf-8"), body, hashlib.sha256).hexdigest()
+
+
 def _send_webhook(url: str, payload: dict) -> None:
     """Plain urllib POST — no new HTTP-client dependency for a single JSON
     POST (requests/httpx aren't in requirements.txt and adding one for
@@ -90,13 +117,30 @@ def _send_webhook(url: str, payload: dict) -> None:
     the job's own status is already durably recorded in Postgres by the
     time this is called, and GET /jobs/{id} polling is the documented
     fallback per ARCHITECTURE.md, so a dropped webhook is degraded, not
-    silently lost."""
+    silently lost.
+
+    Signed via X-KisVideo-Signature (sha256=<hex hmac>) — see
+    _sign_webhook_body. The URL-embedded token Django's
+    KisVideoJobCallbackView already checks proves the callback URL itself
+    is real; this proves the specific payload delivered to it is genuine
+    and untampered, which the URL token alone does not.
+    """
     body = json_module.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    signature = _sign_webhook_body(body)
+    if signature:
+        headers["X-KisVideo-Signature"] = f"sha256={signature}"
+    else:
+        logger.warning(
+            "Sending webhook to %s unsigned — settings.internal_token is not configured. "
+            "The receiver's signature check (if enabled) will reject this.",
+            url,
+        )
     req = urllib.request.Request(
         url,
         data=body,
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=headers,
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
