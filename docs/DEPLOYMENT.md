@@ -250,10 +250,11 @@ this service's ownership.
    (check Redis DB index again); a `failed` row has `error_message` set.
 
 **Worker OOM-killed / restarting under load:**
-See `README.md`'s "Resource sizing" section - the memory limit on
-`worker` is an estimate, not yet validated against a real multi-minute
-video on the actual target hardware. If this happens, that's the first
-place to look, not a code bug by default.
+See `README.md`'s "Resource sizing" section - the 512M limit is grounded
+in a real measured ffmpeg peak-RSS (~376MB for a 720p rendition), not a
+guess, but it was measured on different hardware than this box and
+assumes sources cap out at 720p. If this happens, check whether an
+upload exceeded 720p before assuming it's a code bug.
 
 **SSH disconnects mid-command:** same as Django/Nest - "Connection reset
 by peer" usually just means the SSH session ended, not that the service

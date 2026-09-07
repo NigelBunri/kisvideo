@@ -60,13 +60,18 @@ services:
       - kis-production-network
     volumes:
       - kis_video_uploads:/tmp/kis-video-uploads
-    # See README.md's "Resource sizing" section for where this number
-    # comes from - an estimate flagged explicitly as one, not a measured
-    # value, pending the still-outstanding real ffmpeg/S3 end-to-end run.
+    # See README.md's "Resource sizing" section for the full derivation -
+    # this is a measured value now, not a guess: dev-b0 wrapped real
+    # ffmpeg invocations in `/usr/bin/time -l` against the actual
+    # libx264/veryfast pipeline settings. Peak observed was ~376MB for a
+    # single 720p rendition (renditions run sequentially, never
+    # concurrently, so that's also the worker's peak); 512M leaves ~30%
+    # headroom over that. Assumes source video tops out at 720p - revisit
+    # before allowing higher-resolution uploads.
     deploy:
       resources:
         limits:
-          memory: 768M
+          memory: 512M
 
   beat:
     build: .
