@@ -11,10 +11,14 @@
 #   EXISTING kis-postgres (a new `kis_video` database inside that same
 #   Postgres instance/server - a manual `CREATE DATABASE kis_video`
 #   step at deploy time, not something this compose file does) and the
-#   EXISTING kis-redis, on Redis DB index 1 rather than the default 0
-#   (index 0 already has live Django/Nest task traffic on it - a lesson
-#   learned the hard way earlier the same day this was written, when a
-#   test worker collided with a real task on the shared default DB).
+#   EXISTING kis-redis, on Redis DB index 4. An earlier draft of this
+#   file used index 1, believing index 0 was Django/Nest's only DB in
+#   use - wrong, discovered during the actual first production deploy
+#   (2026-09-07) when the kisvideo worker started receiving and failing
+#   on real Django Celery tasks by name. Django's real production
+#   .env.django (verified directly, not assumed) uses 0 for its general
+#   cache, 1 for CELERY_BROKER_URL, and 2 for CELERY_RESULT_BACKEND;
+#   Nest uses 3. Index 4 was the first genuinely free one.
 # - Both existing containers live on `kis-production-network` (an
 #   external network, created by the Django/Nest compose stack, not this
 #   one) with no host port mapping - reachable by container name

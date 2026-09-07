@@ -8,7 +8,7 @@ this service's api/worker/beat trio and its lean, shared-infra setup.
 **Target:** the same Lightsail box as Django/Nest/chat (`/opt/kis`) — not
 separate infra. This service does **not** run its own Postgres or Redis;
 it reuses the existing `kis-postgres` (a dedicated `kis_video` database
-inside that same instance) and `kis-redis` (DB index 1, not the shared
+inside that same instance) and `kis-redis` (DB index 4, not the shared
 default 0). See `docker-compose.prod.yml`'s own header comment for the
 full reasoning.
 
@@ -138,9 +138,10 @@ docker compose -f docker-compose.prod.yml logs worker --tail=100
 docker compose -f docker-compose.prod.yml logs beat --tail=50
 ```
 
-Confirm in the worker log: `Connected to redis://:**@kis-redis:6379/1`
-(index **1**, not 0 - a wrong index here means this service's tasks are
-silently mixing with Django/Nest's live queue, or going nowhere).
+Confirm in the worker log: `Connected to redis://:**@kis-redis:6379/4`
+(index **4** specifically - a wrong index here means this service's
+tasks are silently mixing with Django's cache/broker/result-backend DBs
+(0/1/2) or Nest's (3), or going nowhere).
 
 ---
 
@@ -240,7 +241,7 @@ this service's ownership.
 **Uploads complete but nothing ever transcodes:**
 1. Check `worker` is actually running and connected:
    `docker compose -f docker-compose.prod.yml logs worker --tail=50` -
-   look for `Connected to redis://:**@kis-redis:6379/1`.
+   look for `Connected to redis://:**@kis-redis:6379/4`.
 2. Check `beat` is running - without it, nothing schedules the periodic
    cleanup, but *manually*-triggered transcode jobs (every real upload)
    don't depend on beat at all, so this specifically points at `worker`
