@@ -153,6 +153,22 @@ def transcode_rendition(source_path: str, output_dir: str, rendition: Rendition)
         # real message, so this was never a data-corruption risk — just a
         # 100% job-failure rate until fixed).
         "libx264",
+        "-profile:v",
+        # Explicit and fixed (not libx264's own default, which varies with
+        # -preset/-b:v and isn't otherwise knowable ahead of encoding) so
+        # write_master_playlist can declare an accurate CODECS attribute on
+        # every rendition without probing each encoded file - "main" is
+        # decodable everywhere H.264 is decodable at all, unlike "high"
+        # (marginal quality gain, no compatibility benefit at these HLS
+        # bitrates) or "baseline" (no B-frames, worse compression).
+        "main",
+        "-level",
+        # 4.0 comfortably covers every rendition in RENDITION_LADDER below
+        # (up to 1080p) - using one fixed level for every rendition, not a
+        # per-height value, keeps this and the CODECS string trivially
+        # correct instead of needing a lookup table that has to stay in
+        # sync with the ladder.
+        "4.0",
         # Explicit rather than relying on libx264's own default (medium) -
         # bitrate is already fixed by -b:v/-maxrate/-bufsize below (correct
         # for an HLS bitrate ladder, where each rung needs a predictable
@@ -217,6 +233,16 @@ def write_master_playlist(output_dir: str, renditions: list[Rendition]) -> str:
     which can legitimately vary a little from the -b:v target) — close
     enough for ABR selection, which is inherently approximate and
     re-adjusts during playback anyway.
+
+    CODECS is not optional in practice despite RFC 8216 listing it as
+    "OPTIONAL": confirmed live against hls.js (used by kistube-website's
+    HlsVideo.tsx) - without it, hls.js fires LEVEL_LOADED but then hangs
+    indefinitely before MANIFEST_PARSED, no error, no further requests, on
+    a real fMP4/CMAF (EXT-X-VERSION:7) playlist like this one. The value
+    here is fixed and exact, not guessed - avc1.4D0028 is H.264 Main
+    Profile ("M"=0x4D) Level 4.0 (0x28), matching transcode_rendition's
+    explicit `-profile:v main -level 4.0` exactly, and mp4a.40.2 is
+    AAC-LC, the only profile ffmpeg's native `-c:a aac` encoder produces.
     """
     lines = ["#EXTM3U", "#EXT-X-VERSION:7"]
     for rendition in sorted(renditions, key=lambda r: r.height, reverse=True):
@@ -227,7 +253,7 @@ def write_master_playlist(output_dir: str, renditions: list[Rendition]) -> str:
         # picker, not something played content is validated against.
         width = int(rendition.height * 16 / 9)
         lines.append(
-            f'#EXT-X-STREAM-INF:BANDWIDTH={bandwidth_bps},RESOLUTION={width}x{rendition.height}'
+            f'#EXT-X-STREAM-INF:BANDWIDTH={bandwidth_bps},RESOLUTION={width}x{rendition.height},CODECS="avc1.4D0028,mp4a.40.2"'
         )
         lines.append(rendition.playlist_filename)
 
